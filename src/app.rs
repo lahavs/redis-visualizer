@@ -45,6 +45,7 @@ pub struct App {
     should_exit: bool,
     redis_client: RedisClient,
     redis_keys_list: RedisKeysList,
+    ui_redis_value: Option<UiRedisValue>,
     key_input: String, // The current key
     mode: Mode,
     filtered_keys: Vec<RedisKeysItem>,
@@ -70,6 +71,18 @@ impl RedisKeysItem {
         }
     }
 }
+
+#[derive(Default)]
+struct UiRedisValueList {
+    items: Vec<(String, String)>,
+    state: ListState,
+}
+
+enum UiRedisValue {
+    Simple(String),
+    List(UiRedisValueList),
+}
+
 
 impl From<&RedisKeysItem> for ListItem<'_> {
     fn from(value: &RedisKeysItem) -> Self {
@@ -101,6 +114,7 @@ impl App {
             should_exit: false,
             redis_client,
             redis_keys_list: RedisKeysList::from(redis_keys.clone()),
+            ui_redis_value: None,
             key_input: String::new(),
             mode: Mode::SelectingParts(Part::KeyInput),
             filtered_keys: RedisKeysList::from(redis_keys).items,
@@ -149,15 +163,19 @@ impl App {
                 Part::RedisKeys => match key.code {
                     KeyCode::Char('q') => self.should_exit = true,
                     KeyCode::Esc => self.highlight_focused(),
-                    KeyCode::Char('j') | KeyCode::Down => self.select_next(),
-                    KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
-                    KeyCode::Char('g') | KeyCode::Home => self.select_first(),
-                    KeyCode::Char('G') | KeyCode::End => self.select_last(),
+                    KeyCode::Char('j') | KeyCode::Down => self.redis_keys_select_next(),
+                    KeyCode::Char('k') | KeyCode::Up => self.redis_keys_select_previous(),
+                    KeyCode::Char('g') | KeyCode::Home => self.redis_keys_select_first(),
+                    KeyCode::Char('G') | KeyCode::End => self.redis_keys_select_last(),
                     _ => {}
                 }
                 Part::RedisValue => match key.code {
                     KeyCode::Char('q') => self.should_exit = true,
                     KeyCode::Esc => self.highlight_focused(),
+                    KeyCode::Char('j') | KeyCode::Down => self.redis_value_select_next(),
+                    KeyCode::Char('k') | KeyCode::Up => self.redis_value_select_previous(),
+                    KeyCode::Char('g') | KeyCode::Home => self.redis_value_select_first(),
+                    KeyCode::Char('G') | KeyCode::End => self.redis_value_select_last(),
                     _ => {}
                 }
             }
@@ -193,11 +211,13 @@ impl App {
     fn pop_key_input_char(&mut self) {
         self.key_input.pop();
         self.calculate_filtered_keys();
+        self.update_redis_value();
     }
 
     fn push_key_input_char(&mut self, value: char) {
         self.key_input.push(value);
         self.calculate_filtered_keys();
+        self.update_redis_value();
     }
 
     fn redis_parts_left(&mut self) {
@@ -279,23 +299,73 @@ impl App {
     //     self.redis_keys_list.scrollbar_state.first();
     // }
 
-    fn select_next(&mut self) {
+    fn update_redis_value(&mut self) {
+        self.ui_redis_value = if let Some(i) = self.redis_keys_list.state.selected() {
+            let index = i.clamp(0, self.filtered_keys.len() - 1);
+            let redis_key = &self.filtered_keys[index];
+            let redis_value = self.redis_client.get_redis_value(&redis_key.redis_key).unwrap();
+            match redis_value {
+                RedisValue::Unknown => Some(UiRedisValue::Simple("Unknown value".to_string())),
+                RedisValue::Hash(hash) => Some(UiRedisValue::List(UiRedisValueList {
+                    items: hash.into_iter().collect(),
+                    state: ListState::default().with_selected(Some(0)),
+                })),
+            }
+        } else {
+            None
+        };
+    }
+
+    fn redis_keys_select_next(&mut self) {
         self.redis_keys_list.state.select_next();
+        self.update_redis_value();
         // self.redis_keys_list.scrollbar_state.next();
     }
-    fn select_previous(&mut self) {
+
+    fn redis_keys_select_previous(&mut self) {
         self.redis_keys_list.state.select_previous();
+        self.update_redis_value();
         // self.redis_keys_list.scrollbar_state.prev();
     }
 
-    fn select_first(&mut self) {
+    fn redis_keys_select_first(&mut self) {
         self.redis_keys_list.state.select_first();
+        self.update_redis_value();
         // self.redis_keys_list.scrollbar_state.first();
     }
 
-    fn select_last(&mut self) {
+    fn redis_keys_select_last(&mut self) {
         self.redis_keys_list.state.select_last();
+        self.update_redis_value();
         // self.redis_keys_list.scrollbar_state.last();
+    }
+
+    fn redis_value_select_next(&mut self) {
+        match &mut self.ui_redis_value {
+            Some(UiRedisValue::List(value)) => value.state.select_next(),
+            _ => {}
+        }
+    }
+
+    fn redis_value_select_previous(&mut self) {
+        match &mut self.ui_redis_value {
+            Some(UiRedisValue::List(value)) => value.state.select_previous(),
+            _ => {}
+        }
+    }
+
+    fn redis_value_select_first(&mut self) {
+        match &mut self.ui_redis_value {
+            Some(UiRedisValue::List(value)) => value.state.select_first(),
+            _ => {}
+        }
+    }
+
+    fn redis_value_select_last(&mut self) {
+        match &mut self.ui_redis_value {
+            Some(UiRedisValue::List(value)) => value.state.select_last(),
+            _ => {}
+        }
     }
 }
 
@@ -380,8 +450,10 @@ impl App {
     fn render_redis_keys_list(&mut self, area: Rect, frame: &mut Frame) {
         let is_highlighted = self.mode == Mode::SelectingParts(Part::RedisKeys);
 
+        // TODO(lahavs): Should it really be here?
         if self.redis_keys_list.state.selected().is_none() {
             self.redis_keys_list.state.select_first();
+            self.update_redis_value();
         }
 
         let num_items = self.filtered_keys.len();
@@ -460,13 +532,13 @@ impl App {
     fn render_selected_redis_value(&mut self, area: Rect, frame: &mut Frame) {
         let is_highlighted = self.mode == Mode::SelectingParts(Part::RedisValue);
 
-        let redis_value = if let Some(i) = self.redis_keys_list.state.selected() {
-            let redis_key = &self.filtered_keys[i];
-            let redis_value = self.redis_client.get_redis_value(&redis_key.redis_key).unwrap();
-            render_redis_value(redis_value)
-        } else {
-            "No key selected".to_string()
-        };
+        // let redis_value = if let Some(i) = self.redis_keys_list.state.selected() {
+        //     let redis_key = &self.filtered_keys[i];
+        //     let redis_value = self.redis_client.get_redis_value(&redis_key.redis_key).unwrap();
+        //     render_redis_value(redis_value)
+        // } else {
+        //     "No key selected".to_string()
+        // };
 
         // We show the list item's info under the list in this paragraph
         let mut block = Block::new()
@@ -481,11 +553,74 @@ impl App {
             block = block.style(HIGHLIGHTED_STYLE);
         }
 
-        // We can now render the item info
-        let paragraph = Paragraph::new(redis_value)
-            .block(block)
-            // .fg(TEXT_FG_COLOR)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(paragraph, area);
+        match &mut self.ui_redis_value {
+            Some(UiRedisValue::Simple(value)) => {
+                // We can now render the item info
+                let paragraph = Paragraph::new(value.clone())
+                    .block(block)
+                    // .fg(TEXT_FG_COLOR)
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(paragraph, area);
+            }
+            Some(UiRedisValue::List(value)) => {
+                let num_items = value.items.len();
+
+                let matches_text = if num_items == 0 {
+                    format!("No fields")
+                } else {
+                    let current_item_index = value.state.selected().unwrap_or(0).clamp(0, num_items-1) + 1;
+                    format!("{current_item_index}/{num_items}")
+                };
+
+                block = block.title_bottom(Line::from(format!(" {matches_text}")).left_aligned());
+                let items: Vec<ListItem> = value
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (key, value))| {
+                        let line = Line::styled(format!("{}: {}", key, value), COMPLETED_TEXT_FG_COLOR);
+                        let mut list_item = ListItem::new(line).bg(NORMAL_ROW_BG);
+                        if is_highlighted {
+                            list_item = list_item.style(HIGHLIGHTED_STYLE);
+                        }
+
+                        list_item
+                    })
+                    .collect();
+
+                // Create a List from all list items and highlight the currently selected one
+                let mut list = List::new(items)
+                    .block(block)
+                    .highlight_symbol(">> ")
+                    .highlight_spacing(HighlightSpacing::Always);
+
+                if ! is_highlighted {
+                    list = list.highlight_style(SELECTED_STYLE)
+                }
+
+                // We need to disambiguate this trait method as both `Widget` and `StatefulWidget` share the
+                // same method name `render`.
+                frame.render_stateful_widget(list, area, &mut value.state);
+
+                if let Some(selected) = value.state.selected() {
+                    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalLeft)
+                        .symbols(symbols::scrollbar::VERTICAL);
+
+                    let mut scrollbar_state = ScrollbarState::default()
+                        .content_length(num_items)
+                        .position(selected);
+
+                    // StatefulWidget::render(scrollbar, area, buf, &mut scrollbar_state);
+                    frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+                }
+            }
+            None => {
+                let paragraph = Paragraph::new("No key selected".to_string())
+                    .block(block)
+                    // .fg(TEXT_FG_COLOR)
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(paragraph, area);
+            }
+        }
     }
 }
