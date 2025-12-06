@@ -301,15 +301,19 @@ impl App {
 
     fn update_redis_value(&mut self) {
         self.ui_redis_value = if let Some(i) = self.redis_keys_list.state.selected() {
-            let index = i.clamp(0, self.filtered_keys.len() - 1);
-            let redis_key = &self.filtered_keys[index];
-            let redis_value = self.redis_client.get_redis_value(&redis_key.redis_key).unwrap();
-            match redis_value {
-                RedisValue::Unknown => Some(UiRedisValue::Simple("Unknown value".to_string())),
-                RedisValue::Hash(hash) => Some(UiRedisValue::List(UiRedisValueList {
-                    items: hash.into_iter().collect(),
-                    state: ListState::default().with_selected(Some(0)),
-                })),
+            if self.filtered_keys.is_empty() {
+                None
+            } else {
+                let index = i.clamp(0, self.filtered_keys.len() - 1);
+                let redis_key = &self.filtered_keys[index];
+                let redis_value = self.redis_client.get_redis_value(&redis_key.redis_key).unwrap();
+                match redis_value {
+                    RedisValue::Unknown => Some(UiRedisValue::Simple("Unknown value".to_string())),
+                    RedisValue::Hash(hash) => Some(UiRedisValue::List(UiRedisValueList {
+                        items: hash.into_iter().collect(),
+                        state: ListState::default().with_selected(Some(0)),
+                    })),
+                }
             }
         } else {
             None
@@ -578,7 +582,14 @@ impl App {
                     .iter()
                     .enumerate()
                     .map(|(i, (key, value))| {
+                        // TODO(lahavs): I like the unstyled text better for values
+                        // Need to distinguish between the key's style..
+                        /*
                         let line = Line::styled(format!("{}: {}", key, value), COMPLETED_TEXT_FG_COLOR);
+                        let mut list_item = ListItem::new(line).bg(NORMAL_ROW_BG);
+                        */
+                        let line = Line::from(format!("{}: {}", key, value));
+
                         let mut list_item = ListItem::new(line).bg(NORMAL_ROW_BG);
                         if is_highlighted {
                             list_item = list_item.style(HIGHLIGHTED_STYLE);
