@@ -50,6 +50,7 @@ pub struct App {
     mode: Mode,
     filtered_keys: Vec<RedisKeysItem>,
     redis_value_part_percent: u16,
+    redis_key_horizontal_scroll: usize,
 }
 
 #[derive(Default)]
@@ -119,6 +120,7 @@ impl App {
             mode: Mode::SelectingParts(Part::KeyInput),
             filtered_keys: RedisKeysList::from(redis_keys).items,
             redis_value_part_percent: 30,
+            redis_key_horizontal_scroll: 0,
         })
     }
 }
@@ -163,8 +165,10 @@ impl App {
                 Part::RedisKeys => match key.code {
                     KeyCode::Char('q') => self.should_exit = true,
                     KeyCode::Esc => self.highlight_focused(),
+                    KeyCode::Char('h') | KeyCode::Left => self.redis_keys_left(),
                     KeyCode::Char('j') | KeyCode::Down => self.redis_keys_select_next(),
                     KeyCode::Char('k') | KeyCode::Up => self.redis_keys_select_previous(),
+                    KeyCode::Char('l') | KeyCode::Left => self.redis_keys_right(),
                     KeyCode::Char('g') | KeyCode::Home => self.redis_keys_select_first(),
                     KeyCode::Char('G') | KeyCode::End => self.redis_keys_select_last(),
                     _ => {}
@@ -320,27 +324,39 @@ impl App {
         };
     }
 
+    fn redis_keys_left(&mut self) {
+        self.redis_key_horizontal_scroll = self.redis_key_horizontal_scroll.saturating_sub(1);
+    }
+
+    fn redis_keys_right(&mut self) {
+        self.redis_key_horizontal_scroll = self.redis_key_horizontal_scroll.saturating_add(1);
+    }
+
     fn redis_keys_select_next(&mut self) {
         self.redis_keys_list.state.select_next();
         self.update_redis_value();
+        // self.redis_key_horizontal_scroll = 0;
         // self.redis_keys_list.scrollbar_state.next();
     }
 
     fn redis_keys_select_previous(&mut self) {
         self.redis_keys_list.state.select_previous();
         self.update_redis_value();
+        // self.redis_key_horizontal_scroll = 0;
         // self.redis_keys_list.scrollbar_state.prev();
     }
 
     fn redis_keys_select_first(&mut self) {
         self.redis_keys_list.state.select_first();
         self.update_redis_value();
+        // self.redis_key_horizontal_scroll = 0;
         // self.redis_keys_list.scrollbar_state.first();
     }
 
     fn redis_keys_select_last(&mut self) {
         self.redis_keys_list.state.select_last();
         self.update_redis_value();
+        // self.redis_key_horizontal_scroll = 0;
         // self.redis_keys_list.scrollbar_state.last();
     }
 
@@ -416,6 +432,20 @@ fn render_redis_value(redis_value: RedisValue) -> String {
     }
 }
 
+fn horizontal_slice(s: &str, start: usize, width: usize) -> &str {
+    let start_byte = s.char_indices()
+        .nth(start)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| s.len());
+
+    let end_byte = s.char_indices()
+        .nth(start + width)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| s.len());
+
+    &s[start_byte..end_byte]
+}
+
 impl App {
     fn render_key_area(&mut self, area: Rect, frame: &mut Frame) {
         let [label_area, input_area] = Layout::horizontal([
@@ -487,13 +517,25 @@ impl App {
             block = block.style(HIGHLIGHTED_STYLE);
         }
 
+        let area_width = area.width as usize;
+
+        let longest_filtered_redis_key = self.filtered_keys.iter().map(|redis_keys_item| redis_keys_item.redis_key.len()).max().unwrap_or(0);
+        // -5: Due to the '>> ' (3 cells) and the border (1 cell at each size)
+        let largest_horizontal_scroll = longest_filtered_redis_key.saturating_sub(area_width-5);
+        self.redis_key_horizontal_scroll = self.redis_key_horizontal_scroll.min(largest_horizontal_scroll);
 
         // Iterate through all elements in the `items` and stylize them.
         let items: Vec<ListItem> = self.filtered_keys
             .iter()
             .enumerate()
             .map(|(i, redis_keys_item)| {
-                let mut list_item = ListItem::from(redis_keys_item).bg(NORMAL_ROW_BG);
+                // let start = self.redis_key_horizontal_scroll.min(redis_keys_item.redis_key.len());
+                // let end = (start + area_width).min(redis_keys_item.redis_key.len());
+                // let text = &redis_keys_item.redis_key[start..end];
+                let text = horizontal_slice(&redis_keys_item.redis_key, self.redis_key_horizontal_scroll, area_width);
+                let line = Line::styled(text.clone(), COMPLETED_TEXT_FG_COLOR);
+                let mut list_item = ListItem::new(line).bg(NORMAL_ROW_BG);
+                // let mut list_item = ListItem::from(redis_keys_item).bg(NORMAL_ROW_BG);
                 if is_highlighted {
                     list_item = list_item.style(HIGHLIGHTED_STYLE);
                 }
@@ -520,6 +562,7 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.redis_keys_list.state);
 
         if let Some(selected) = self.redis_keys_list.state.selected() {
+            // Vertical scroll
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalLeft)
                 .symbols(symbols::scrollbar::VERTICAL);
 
@@ -529,6 +572,15 @@ impl App {
 
             // StatefulWidget::render(scrollbar, area, buf, &mut scrollbar_state);
             frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+
+            // Horizontal scroll
+            // let redis_key = &self.filtered_keys[selected];
+            let horizontal_scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+                    .symbols(symbols::scrollbar::HORIZONTAL);
+            let mut horizontal_scrollbar_state = ScrollbarState::default()
+                .content_length(largest_horizontal_scroll)
+                .position(self.redis_key_horizontal_scroll);
+            frame.render_stateful_widget(horizontal_scrollbar, area, &mut horizontal_scrollbar_state);
         }
         // StatefulWidget::render(scrollbar, area, buf, &mut self.redis_keys_list.scrollbar_state);
     }
